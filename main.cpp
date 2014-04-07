@@ -32,7 +32,7 @@ using std::underlying_type;
 #include <llvm/PassManager.h>
 #include <llvm/Support/TargetSelect.h>
 #include <llvm/Transforms/Scalar.h>
-using llvm::Module; using llvm::BasicBlock; using llvm::IRBuilder; using llvm::getGlobalContext; using llvm::Value; using llvm::FunctionType; using llvm::ExecutionEngine; using llvm::EngineBuilder; using llvm::FunctionPassManager; using llvm::APInt; using llvm::ConstantInt; using llvm::ConstantStruct; using llvm::AllocaInst; using llvm::StructType; using llvm::Constant;
+using llvm::Module; using llvm::BasicBlock; using llvm::IRBuilder; using llvm::getGlobalContext; using llvm::Value; using llvm::FunctionType; using llvm::ExecutionEngine; using llvm::EngineBuilder; using llvm::FunctionPassManager; using llvm::APInt; using llvm::ConstantInt; using llvm::ConstantStruct; using llvm::AllocaInst; using llvm::StructType; using llvm::Constant; using llvm::CmpInst; using llvm::PHINode;
 typedef llvm::Function llvmFunction;
 typedef llvm::Type llvmType;
 
@@ -68,7 +68,7 @@ string Typename(Type type) {
 		case Type::Bool: return "Bool";
 	}
 }
-/* For quick Q&P
+/* For quick C&P
 switch(type) {
 	case Type::Nil: 
 	case Type::Variant: 
@@ -133,7 +133,7 @@ class Scope {
 		explicit Scope(Scope& parent) : parent(&parent) {}
 		Function& func(string&& name) { string temp = move(name); return lookup<Function>(&Scope::fns, temp); }
 		Function& func(const string& name) { return lookup<Function>(&Scope::fns, name); }
-		Variable& var(string&& name) { return lookup<Variable>(&Scope::vars, move(name)); }
+		Variable& var(const string& name) { return lookup<Variable>(&Scope::vars, name); }
 		void addfunc(unique_ptr<Function> f);
 		void addvar(Variable*);
 		void forallfunctions(std::function<void(Function&)> l) { if(parent) parent->forallfunctions(l); for(auto& f: fns) l(*f.second); }
@@ -143,7 +143,6 @@ class CompilationContext {
 		Module& m_module;
 		IRBuilder<>& m_builder;
 		NamingProvider m_names;
-  		BasicBlock *m_bb;
 		Scope m_scope;
 		Function& function;
 	public:
@@ -151,31 +150,28 @@ class CompilationContext {
 			m_module(module),
 			m_builder(builder),
 			m_names(name),
-			m_bb(),
 			m_scope(scope),
 			function(func)
 		{
 			llvmFunction* f = module.getFunction(name);
 			if(!f)
 				throw CompilerInternal("Context for nonexistent function");
-			m_bb = BasicBlock::Create(getGlobalContext(), names().block("entry"), f);
-			builder.SetInsertPoint(&bb());
+			BasicBlock* bb = BasicBlock::Create(getGlobalContext(), names().block("entry"), f);
+			builder.SetInsertPoint(bb);
 		}
-		CompilationContext(CompilationContext& parent, const string& name) :
+		/*CompilationContext(CompilationContext& parent, const string& name) :
 			m_module(parent.module()),
 			m_builder(parent.builder()),
 			m_names(parent.names().block(name)),
-			m_bb(BasicBlock::Create(getGlobalContext(), names().block(name))),
 			m_scope(parent.scope()),
 			function(parent.function)
 		{
 			builder().SetInsertPoint(&bb());
-		}
+		}*/
 		CompilationContext(const CompilationContext&) = delete;
 		Module& module() { return m_module; }
 		IRBuilder<>& builder() { return m_builder; }
 		NamingProvider& names() { return m_names; }
-		BasicBlock& bb() { return *m_bb; }
 		Scope& scope() { return m_scope; }
 		Function& func() { return function; }
 };
@@ -206,9 +202,12 @@ llvmType* getLLVMType(Type type) {
 		case Type::Variant:	return getVariantLLVMType();
 	}
 }
+Constant* TypeTagValue(Type type) {
+	return checkCompile(ConstantInt::get(getGlobalContext(), APInt(getVariantTypeSize(), TypeTag(type), false)));
+}
 Value* defaultVariant(Type type) {
 	return ConstantStruct::get(getVariantLLVMType(), vector<Constant*>{
-		ConstantInt::get(getGlobalContext(), APInt(getVariantTypeSize(), TypeTag(type), false)),
+		TypeTagValue(type),
 		ConstantInt::get(getGlobalContext(), APInt(getVariantVarSize(), 0, false)),
 	});
 }
@@ -218,32 +217,7 @@ class RValue {
 		const Type type;
 		Value * const value;
 		RValue(Type type, Value* value) : type(type), value(checkCompile(value)) {}
-		RValue convert(CompilationContext& cc, Type newtype) {
-			if(newtype == type)
-				return *this;
-			if(newtype == Type::Variant) {
-				Value* newvalue = nullptr;
-				switch(type) {
-					case Type::Nil: newvalue = defaultVariant(type); break;
-					case Type::Integer:
-					case Type::Bool: newvalue = cc.builder().CreateInsertValue(defaultVariant(type),
-						cc.builder().CreateZExt(value, getVariantVarLLVMType(), cc.names().tcv("intbooltovariantvalue")),
-						{1}, cc.names().tcv("intbooltovariant")); break;
-					case Type::Variant: throw Unreachable();
-				}
-				return RValue(Type::Variant, newvalue);
-			}
-			if(type == Type::Variant) {
-				switch(newtype) {
-					case Type::Integer: return RValue(Type::Integer, ConstantInt::get(getGlobalContext(), APInt(32, 1338, false))); // TODO
-					case Type::Bool: return RValue(Type::Bool, ConstantInt::get(getGlobalContext(), APInt(1, 1, false))); // TODO
-					case Type::Nil: case Type::Variant: throw Unreachable();
-				}
-			}
-			if(newtype == Type::Bool && type == Type::Integer)
-				return RValue(Type::Bool, cc.builder().CreateTrunc(value, getLLVMType(Type::Bool), cc.names().tcv("inttobool"))); // TODO Do it right.
-			throw TypeConversion(type, newtype);
-		}
+		RValue convert(CompilationContext& cc, Type newtype);
 };
 
 class Variable : public Statement {
@@ -317,6 +291,11 @@ class Function {
 		virtual void compile(Module& m, ExecutionEngine& ee, FunctionPassManager& fpm, Scope& globalscope) = 0;
 		llvmFunction& func() { if(!f) throw CompilerInternal("Reference to uncompiled function"); return *f; }
 		virtual vector<Type> partypes() = 0;
+		virtual RValue compilecall(CompilationContext& cc, vector<RValue> argvs) {
+			return RValue(returntype, cc.builder().CreateCall(&func(),
+				map_vector(argvs, [](const RValue& v){ return v.value; }),
+				returntype != Type::Nil ? cc.names().tmp("call." + name) : ""));
+		}
 };
 
 class ScriptFunction : public Function {
@@ -377,7 +356,7 @@ class Program {
 			llvm::InitializeNativeTarget();
 			module = new Module("mm", getGlobalContext());
 			string err;
-			ee = EngineBuilder(&*module).setErrorStr(&err).create();
+			ee = EngineBuilder(module).setErrorStr(&err).create();
 			if(!ee)
 				throw CompilerInternal("Could not create Execution Engine: " + err);
 			ee->DisableSymbolSearching();
@@ -392,8 +371,8 @@ class Program {
 			fpm->doInitialization();
 			ee->addModule(module);
 			module->MaterializeAllPermanently();
-			globalscope.forallfunctions([&](Function& f) { f.precompile(*module); });
-			globalscope.forallfunctions([&](Function& f) { f.compile(*module, *ee, *fpm, globalscope); });
+			globalscope.forallfunctions([this](Function& f) { f.precompile(*module); });
+			globalscope.forallfunctions([this](Function& f) { f.compile(*module, *ee, *fpm, globalscope); });
 		}
 };
 
@@ -444,11 +423,11 @@ class Var : public Expression {
 		}
 };
 
-class Const : public Expression {
+class ConstInt : public Expression {
 	private:
 		int32_t c;
 	public:
-		Const(int32_t c) : c(c) {}
+		ConstInt(int32_t c) : c(c) {}
 		RValue compile(CompilationContext& cc) {
 			return RValue(Type::Integer, ConstantInt::get(getGlobalContext(), APInt(sizeof(c)*CHAR_BIT,c,numeric_limits<decltype(c)>::min < 0)));
 		}
@@ -470,6 +449,20 @@ class Binary : public Expression { // Currently integer binary
 class Plus  : public Binary { public: using Binary::Binary; private: Value* compileInstr(CompilationContext& cc, Value* lhv, Value* rhv) { return cc.builder().CreateAdd(lhv, rhv, cc.names().tmp("add")); } };
 class Minus : public Binary { public: using Binary::Binary; private: Value* compileInstr(CompilationContext& cc, Value* lhv, Value* rhv) { return cc.builder().CreateSub(lhv, rhv, cc.names().tmp("sub")); } };
 
+class Assignment : public Expression { // Theoretically a binary, but technically too different
+	private:
+		string to;
+		Eup rh;
+	public:
+		Assignment(const string& to, Eup rh) : to(to), rh(move(rh)) {}
+		RValue compile(CompilationContext& cc) {
+			Variable& var = cc.scope().var(to);
+			RValue rhv = rh->compile(cc).convert(cc, var.type);
+			var.store(cc, RValue(rhv));
+			return rhv;
+		}
+};
+
 class Call : public Expression {
 	private:
 		string fn;
@@ -484,12 +477,8 @@ class Call : public Expression {
 			std::vector<RValue> argvs;
 			for (unsigned i = 0, e = args.size(); i != e; ++i) {
 				argvs.push_back(args[i]->compile(cc).convert(cc, partypes[i]));
-				if (!argvs.back().value)
-					throw CompilerInternal("Argument did not compile");
 			}
-			return RValue(callee.returntype, cc.builder().CreateCall(&callee.func(),
-				map_vector(argvs, [](const RValue& v){ return v.value; }),
-				callee.returntype != Type::Nil ? cc.names().tmp("call." + fn) : ""));
+			return callee.compilecall(cc, argvs);
 		}
 };
 
@@ -512,21 +501,39 @@ namespace demo { // convenience functions for demonstration purposes - ugly to w
 
 extern "C" {
 void LogInt(int32_t i) {
-	std::cout << "LogInt " << i << std::endl;
+	std::cout << i << std::endl;
+}
+void LogBool(bool f) {
+	std::cout << (f?"true":"false") << std::endl;
 }
 }
 
 int main() {
 	using namespace demo;
 	Program p;
-	p.addfunc(unique_ptr<ScriptFunction>(new ScriptFunction("Simpleton", Type::Nil, {}, Body(SL(s<Return>(nullptr))))));
-	p.addfunc(unique_ptr<ScriptFunction>(new ScriptFunction("Foo", Type::Integer, { Variable(Type::Integer, "a"), Variable(Type::Integer, "b") }, Body(SL(s<Return>(e<Plus>(e<Plus>(e<Var>("a"), e<Var>("b")), e<Const>(-1))))))));
+	//p.addfunc(unique_ptr<ScriptFunction>(new ScriptFunction("Simpleton", Type::Nil, {}, Body(SL(s<Return>(nullptr))))));
+	p.addfunc(unique_ptr<ScriptFunction>(new ScriptFunction("Foo", Type::Integer, { Variable(Type::Integer, "a"), Variable(Type::Integer, "b") }, Body(SL(s<Return>(e<Plus>(e<Plus>(e<Var>("a"), e<Var>("b")), e<ConstInt>(-1))))))));
 	p.addfunc(unique_ptr<ScriptFunction>(new ScriptFunction("Main", Type::Integer, {}, Body(SL(
-		s<Eval>(e<Call>("LogInt", EL(e<Call>("Foo", EL(e<Const>(1), e<Const>(3)))))),
-		s<Eval>(e<Call>("LogInt", EL(e<Call>("Foo", EL(e<Const>(1), e<Const>(1)))))),
-		s<Return>(e<Const>(0))
+		s<Eval>(e<Call>("LogInt", EL(e<Call>("Foo", EL(e<ConstInt>(1), e<ConstInt>(3)))))),
+		s<Eval>(e<Call>("LogBool", EL(e<Call>("Foo", EL(e<ConstInt>(1), e<ConstInt>(2)))))),
+		s<Eval>(e<Call>("LogBool", EL(e<ConstInt>(-2)))),
+		s<Eval>(e<Call>("LogBool", EL(e<ConstInt>(-1)))),
+		s<Eval>(e<Call>("LogBool", EL(e<ConstInt>( 0)))),
+		s<Eval>(e<Call>("LogBool", EL(e<ConstInt>(+1)))),
+		s<Eval>(e<Call>("LogBool", EL(e<ConstInt>(+2)))),
+		s<Variable>(Type::Integer, "inttest"),
+		s<Eval>(e<Assignment>("inttest", e<Call>("Foo", EL(e<ConstInt>(5), e<ConstInt>(2))))),
+		s<Variable>(Type::Bool, "booltest"),
+		s<Eval>(e<Assignment>("booltest", e<Var>("inttest"))),
+		s<Eval>(e<Call>("LogBool", EL(e<Var>("booltest")))),
+		s<Variable>(Type::Variant, "varianttest"),
+		s<Eval>(e<Assignment>("varianttest", e<ConstInt>(13))),
+		s<Eval>(e<Assignment>("varianttest", e<Var>("booltest"))),
+		s<Eval>(e<Call>("LogBool", EL(e<Var>("varianttest")))),
+		s<Return>(e<ConstInt>(0))
 	)))));
-	p.addfunc(unique_ptr<Function>(new EngineFunction("LogInt", &LogInt)));
+	p.addfunc(make_unique<EngineFunction>("LogInt", &LogInt));
+	p.addfunc(make_unique<EngineFunction>("LogBool", &LogBool));
 //	p.addfunc(unique_ptr<Function>(new ScriptFunction("LogInt", Type::Nil, {Variable(Type::Integer, "discard")}, Body(SL(s<Return>(nullptr))))));
 	p.compile();
 
@@ -542,3 +549,46 @@ int main() {
 
 void Scope::addfunc(unique_ptr<Function> f) { if(parent) parent->addfunc(move(f)); else { string name = f->name; fns.emplace(name, move(f)); } }
 void Scope::addvar(Variable* v) { string name = v->name; vars.emplace(name, v); }
+RValue RValue::convert(CompilationContext& cc, Type newtype)
+{
+	if(newtype == type)
+		return *this;
+	if(newtype == Type::Variant) {
+		Value* newvalue = nullptr;
+		switch(type) {
+			case Type::Nil: newvalue = defaultVariant(type); break;
+			case Type::Integer:
+			case Type::Bool: newvalue = cc.builder().CreateInsertValue(defaultVariant(type),
+									 cc.builder().CreateZExt(value, getVariantVarLLVMType(), cc.names().tcv("intbooltovariantvalue")),
+									 {1}, cc.names().tcv("intbooltovariant")); break;
+			case Type::Variant: throw Unreachable();
+		}
+		return RValue(Type::Variant, newvalue);
+	}
+	if(type == Type::Variant) {
+		switch(newtype) {
+			case Type::Integer:	case Type::Bool: {
+				Value* typetag = checkCompile(cc.builder().CreateExtractValue(value, {0}, cc.names().tcv("varianttointbool.typetag")));
+				Value* typematch = checkCompile(cc.builder().CreateICmp(CmpInst::ICMP_EQ, TypeTagValue(newtype), typetag, cc.names().tcv("varianttointbool.typematch")));
+				Value* extract = checkCompile(cc.builder().CreateExtractValue(value, {1}, cc.names().tcv("varianttointbool.directextract")));
+				Value* cvextract = checkCompile(cc.builder().CreateTrunc(extract, getLLVMType(newtype), cc.names().tcv("varianttointbool.extract")));
+				BasicBlock* orig = cc.builder().GetInsertBlock();
+				BasicBlock* mismatch = BasicBlock::Create(getGlobalContext(), cc.names().block("varianttointbool.typemismatch"), &cc.func().func());
+				BasicBlock* continuation = BasicBlock::Create(getGlobalContext(), cc.names().block("varianttointbool.continuation"), &cc.func().func());
+				cc.builder().CreateCondBr(typematch, continuation, mismatch);
+				cc.builder().SetInsertPoint(mismatch);
+				Value* coersion = checkCompile(ConstantInt::get(getGlobalContext(), APInt((newtype==Type::Bool)?1:32, 1338, false))); // TODO
+				cc.builder().CreateBr(continuation);
+				cc.builder().SetInsertPoint(continuation);
+				PHINode *pn = cc.builder().CreatePHI(getLLVMType(newtype), 2, cc.names().tcv("varianttointbool.merge"));
+				pn->addIncoming(cvextract, orig);
+				pn->addIncoming(coersion, mismatch);
+				return RValue(newtype, pn);
+			} break;
+			case Type::Nil: case Type::Variant: throw Unreachable();
+		}
+	}
+	if(newtype == Type::Bool && type == Type::Integer)
+		return RValue(Type::Bool, cc.builder().CreateICmp(CmpInst::ICMP_NE, value, ConstInt(0).compile(cc).value, cc.names().tcv("inttobool")));
+	throw TypeConversion(type, newtype);
+}
