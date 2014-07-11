@@ -511,7 +511,7 @@ class Greater   : public IntComparison<CmpInst::ICMP_SGT> { public: using IntCom
 class LessEq    : public IntComparison<CmpInst::ICMP_SLE> { public: using IntComparison::IntComparison; string name() { return "lesseq"   ; } };
 class GreaterEq : public IntComparison<CmpInst::ICMP_SGE> { public: using IntComparison::IntComparison; string name() { return "greatereq"; } };
 
-class Assignment : public Expression { // Theoretically a binary, but technically too different
+class Assignment : public Expression { // Theoretically a binary operation, but technically too different
 	private:
 		string to;
 		Eup rh;
@@ -552,29 +552,29 @@ class If : public Statement {
 	public:
 		If(Eup condition, Body thenbody, Body elsebody) : condition(move(condition)), thenbody(move(thenbody)), elsebody(move(elsebody)) {}
 		void compile(CompilationContext& cc) {
-				RValue ifcond(condition->compile(cc).convert(cc,Type::Bool));
-				BasicBlock* orig = cc.builder().GetInsertBlock();
+			RValue ifcond(condition->compile(cc).convert(cc,Type::Bool));
+			BasicBlock* orig = cc.builder().GetInsertBlock();
 
-				BasicBlock* thenbb = BasicBlock::Create(getGlobalContext(), cc.names().block("if.then"), &cc.func().func());
+			BasicBlock* thenbb = BasicBlock::Create(getGlobalContext(), cc.names().block("if.then"), &cc.func().func());
+			cc.builder().SetInsertPoint(thenbb);
+			thenbody.compile(cc);
+			BasicBlock* elsebb = BasicBlock::Create(getGlobalContext(), cc.names().block("if.else"), &cc.func().func());
+			cc.builder().SetInsertPoint(elsebb);
+			elsebody.compile(cc);
+
+			cc.builder().SetInsertPoint(orig);
+			cc.builder().CreateCondBr(ifcond.value, thenbb, elsebb);
+			BasicBlock* continuation = BasicBlock::Create(getGlobalContext(), cc.names().block("if.continuation"), &cc.func().func());
+			if(!thenbb->getTerminator()) {
 				cc.builder().SetInsertPoint(thenbb);
-				thenbody.compile(cc);
-				BasicBlock* elsebb = BasicBlock::Create(getGlobalContext(), cc.names().block("if.else"), &cc.func().func());
+				cc.builder().CreateBr(continuation);
+			}
+			if(!elsebb->getTerminator()) {
 				cc.builder().SetInsertPoint(elsebb);
-				elsebody.compile(cc);
+				cc.builder().CreateBr(continuation);
+			}
 
-				cc.builder().SetInsertPoint(orig);
-				cc.builder().CreateCondBr(ifcond.value, thenbb, elsebb);
-				BasicBlock* continuation = BasicBlock::Create(getGlobalContext(), cc.names().block("if.continuation"), &cc.func().func());
-				if(!thenbb->getTerminator()) {
-					cc.builder().SetInsertPoint(thenbb);
-					cc.builder().CreateBr(continuation);
-				}
-				if(!elsebb->getTerminator()) {
-					cc.builder().SetInsertPoint(elsebb);
-					cc.builder().CreateBr(continuation);
-				}
-
-				cc.builder().SetInsertPoint(continuation);
+			cc.builder().SetInsertPoint(continuation);
 		}
 };
 
