@@ -552,7 +552,7 @@ class If : public Statement {
 	public:
 		If(Eup condition, Body thenbody, Body elsebody) : condition(move(condition)), thenbody(move(thenbody)), elsebody(move(elsebody)) {}
 		void compile(CompilationContext& cc) {
-			RValue ifcond(condition->compile(cc).convert(cc,Type::Bool));
+			RValue ifcond(condition->compile(cc).convert(cc, Type::Bool));
 			BasicBlock* orig = cc.builder().GetInsertBlock();
 
 			BasicBlock* thenbb = BasicBlock::Create(getGlobalContext(), cc.names().block("if.then"), &cc.func().func());
@@ -575,6 +575,35 @@ class If : public Statement {
 			}
 
 			cc.builder().SetInsertPoint(continuation);
+		}
+};
+
+class While : public Statement {
+	private:
+		Eup condition;
+		Body body;
+	public:
+		While(Eup condition, Body body) : condition(move(condition)), body(move(body)) {}
+		void compile(CompilationContext& cc) {
+
+			// Blocks
+			BasicBlock* orig = cc.builder().GetInsertBlock();
+			BasicBlock* condbb = BasicBlock::Create(getGlobalContext(), cc.names().block("while.cond"), &cc.func().func());
+			BasicBlock* bodybb = BasicBlock::Create(getGlobalContext(), cc.names().block("while.body"), &cc.func().func());
+			BasicBlock* contbb = BasicBlock::Create(getGlobalContext(), cc.names().block("while.continuation"), &cc.func().func());
+
+			// Compile
+			cc.builder().CreateBr(condbb);
+
+			cc.builder().SetInsertPoint(condbb);
+			RValue whilecond(condition->compile(cc).convert(cc, Type::Bool));
+			cc.builder().CreateCondBr(whilecond.value, bodybb, contbb);
+
+			cc.builder().SetInsertPoint(bodybb);
+			body.compile(cc);
+			cc.builder().CreateBr(condbb);
+
+			cc.builder().SetInsertPoint(contbb);
 		}
 };
 
@@ -644,6 +673,7 @@ int main() {
 		s<Eval>(e<Assignment>("varianttest", e<Var>("booltest"))),
 		s<Eval>(e<Call>("LogBool", EL(e<Var>("varianttest")))),
 		s<Eval>(e<Call>("VariantFuncTest", EL(e<ConstInt>(17)))),
+		s<Eval>(e<Call>("WhileTest", EL(e<ConstInt>(7)))),
 		s<Return>(e<ConstInt>(0))
 	)))));
 	p.addfunc(make_unique<EngineFunction>("LogInt", &LogInt));
@@ -652,7 +682,15 @@ int main() {
 		s<Eval>(e<Call>("LogInt", EL(e<Var>("p")))),
 		s<Eval>(e<Call>("LogBool", EL(e<Var>("p"))))
 	)))));
-//	p.addfunc(unique_ptr<Function>(new ScriptFunction("LogInt", Type::Nil, {Variable(Type::Integer, "discard")}, Body(SL(s<Return>(nullptr))))));
+	p.addfunc(unique_ptr<ScriptFunction>(new ScriptFunction("WhileTest", Type::Nil, { Variable(Type::Integer, "upto") }, Body(SL(
+		s<Variable>(Type::Variant, "i"),
+		s<Eval>(e<Assignment>("i", e<ConstInt>(1))),
+		s<While>(e<Less>(e<Var>("i"), e<Var>("upto")), SL(
+			s<Eval>(e<Assignment>("i", e<Plus>(e<Var>("i"), e<ConstInt>(1)))),
+			s<Eval>(e<Call>("LogInt", EL(e<Var>("i"))))
+		))
+	)))));
+	//p.addfunc(unique_ptr<Function>(new ScriptFunction("LogInt", Type::Nil, {Variable(Type::Integer, "discard")}, Body(SL(s<Return>(nullptr))))));
 	return maindo(move(p.compile()));
 }
 
