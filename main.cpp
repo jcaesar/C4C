@@ -624,7 +624,7 @@ namespace demo { // convenience functions for demonstration purposes - ugly to w
 	template<typename... T>	vector<unique_ptr<Expression>> EL(T... t) { vector<unique_ptr<Expression>> el; L_ins<Expression>(el, move(t)...); return move(el); }
 
 	int maindo(SuperContext&& sc) {
-		sc.module().dump();
+		//sc.module().dump(); You can either dump it or execute it, but not both. SIGSEGV otherwise
 		auto mainf = sc.module().getFunction("Main");
 		if(!mainf)
 			throw CompilerError("No Main");
@@ -684,7 +684,7 @@ int main() {
 	)))));
 	p.addfunc(unique_ptr<ScriptFunction>(new ScriptFunction("WhileTest", Type::Nil, { Variable(Type::Integer, "upto") }, Body(SL(
 		s<Variable>(Type::Variant, "i"),
-		s<Eval>(e<Assignment>("i", e<ConstInt>(1))),
+		s<Eval>(e<Assignment>("i", e<ConstInt>(0))),
 		s<While>(e<Less>(e<Var>("i"), e<Var>("upto")), SL(
 			s<Eval>(e<Assignment>("i", e<Plus>(e<Var>("i"), e<ConstInt>(1)))),
 			s<Eval>(e<Call>("LogInt", EL(e<Var>("i"))))
